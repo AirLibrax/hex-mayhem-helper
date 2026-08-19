@@ -4,6 +4,18 @@ LOL 极地大乱斗（ARAM）辅助悬浮窗：选人/载入阶段显示英雄�
 
 > 本项目与 Riot Games 无关，非官方出品。Riot Games 及其相关商标归 Riot Games, Inc. 所有。
 
+## API Key 申请（必读）
+
+本工具的数据来自 **aramgg.com 的官方 API 接口**（[data.dtodo.cn](https://data.dtodo.cn/developer.html)），**用户需要自己申请 API Key 后填入才能使用**（免费，200 credits/天）。
+
+申请步骤：
+1. 打开 [data.dtodo.cn/developer.html](https://data.dtodo.cn/developer.html)
+2. GitHub 授权登录（给海克斯助手项目点 Star 即可）
+3. 生成你的 API Key
+4. 把 Key 填进程序目录下的 `api_key.txt`（或设置里的 API Key 输入框），重启生效
+
+> 开源版不含内置 API Key；未配置 Key 时程序会提示申请地址。
+
 ## 展示结构（按游戏阶段）
 
 悬浮窗为无边框、置顶、半透明、可拖动的深色面板，按 LCU 对局阶段动态切换内容区。以下为各阶段的完整展示结构。
