@@ -10,6 +10,21 @@ from .paths import data_dir
 APP_DIR = data_dir()
 CONFIG_PATH = APP_DIR / "settings.json"
 DB_PATH = APP_DIR / "stats_cache.db"
+API_KEY_FILE = APP_DIR / "api_key.txt"
+
+
+def load_api_key_file() -> str:
+    """读取程序目录 api_key.txt：第一行非注释内容即 Key（用户自己申请）。
+    留空/无文件 = 使用内置 Key。"""
+    try:
+        if API_KEY_FILE.exists():
+            for line in API_KEY_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line
+    except OSError:
+        pass
+    return ""
 
 DEFAULT_SETTINGS = {
     "provider": "aramgg",          # aramgg | hexdata

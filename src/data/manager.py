@@ -93,13 +93,17 @@ class DataManager:
     def get_champion(self, champion_id: int) -> Optional[ChampionStat]:
         return self._cache.get_champion(champion_id)
 
-    def get_matchup(self, my_ids: list[int], their_ids: list[int]) -> MatchupView:
+    def get_matchup(self, my_ids: list[int], their_ids: list[int],
+                    bench_ids: Optional[list[int]] = None) -> MatchupView:
         mine = [self.get_champion(i) for i in my_ids]
         theirs = [self.get_champion(i) for i in their_ids]
         mine = [c for c in mine if c]
         theirs = [c for c in theirs if c]
+        bench = [self.get_champion(i) for i in (bench_ids or [])]
+        bench = [c for c in bench if c]
         patch = self._cache.provider_of("champions") or ""
-        return MatchupView(my_team=mine, their_team=theirs, patch=patch)
+        return MatchupView(my_team=mine, their_team=theirs,
+                           bench_team=bench, patch=patch)
 
     def lookup_augment(self, name: str):
         return self._cache.find_augment_by_name(name)

@@ -174,6 +174,22 @@ class OverlayWindow(QWidget):
         self._teams_widget.hide()  # 无数据/非选人阶段不显示空阵容
         v.addWidget(self._teams_widget)
 
+        # 公共台（未被选择的英雄）区：选人阶段显示
+        self._bench_widget = QWidget()
+        bv = QVBoxLayout(self._bench_widget)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(2)
+        self._bench_header = QLabel("未被选择的英雄")
+        self._bench_header.setObjectName("teamHeader")
+        bv.addWidget(self._bench_header)
+        self._bench_labels: list[QLabel] = []
+        for _ in range(5):
+            lab = QLabel("-")
+            bv.addWidget(lab)
+            self._bench_labels.append(lab)
+        self._bench_widget.hide()
+        v.addWidget(self._bench_widget)
+
         # 符文区
         self._aug_widget = QWidget()
         av = QVBoxLayout(self._aug_widget)
@@ -309,13 +325,13 @@ class OverlayWindow(QWidget):
         self._build_widget.hide()
 
     def set_augments(self, rows: list[tuple]) -> None:
-        """rows: [(符文名, 胜率, T级, 选取率)]，识别到弹窗时调用"""
+        """rows: [(符文名, 胜率, T级, 选取率, 组合提示)]，识别到弹窗时调用"""
         self._augments = rows
         self._render_augments()
         self._aug_widget.setVisible(bool(rows))
 
     def show_teams(self, show_my: bool = True, show_their: bool = True) -> None:
-        """按阶段控制阵容区显隐：选人只我方，载入双方，对局隐藏"""
+        """按阶段控制阵容区显隐：选人只我方(+公共台)，载入双方，对局隐藏"""
         self._team_headers["my"].setVisible(show_my)
         for lab in self._team_labels["my"]:
             lab.setVisible(show_my)
@@ -323,12 +339,15 @@ class OverlayWindow(QWidget):
         for lab in self._team_labels["their"]:
             lab.setVisible(show_their)
         self._teams_widget.setVisible(show_my or show_their)
+        # 公共台跟随我方显示（仅选人阶段）
+        self._bench_widget.setVisible(show_my and bool(self._matchup and self._matchup.bench_team))
 
     def _render_teams(self) -> None:
         if not self._matchup:
             for lab in self._team_labels["my"] + self._team_labels["their"]:
                 lab.setText("-")
                 lab.setStyleSheet("")
+            self._bench_widget.hide()
             return
         teams = {"my": self._matchup.my_team, "their": self._matchup.their_team}
         avgs = {"my": self._matchup.my_avg, "their": self._matchup.their_avg}
@@ -349,21 +368,41 @@ class OverlayWindow(QWidget):
                     pick_txt = f" 选取率:{c.pick_rate:.1f}%" if c.pick_rate is not None else ""
                     text = f"{tier_txt}{self._manager.champion_display_name(c)} 胜率:{c.win_rate:.1f}%{pick_txt}"
                     labels[i].setText(text)
-                    style = self._tier_style(c.tier)
-                    labels[i].setStyleSheet(style or "")
+                    labels[i].setStyleSheet(self._tier_style(c.tier) or "")
                 else:
                     labels[i].setText("-")
                     labels[i].setStyleSheet("")
+        # 公共台（未被选择的英雄）
+        self._render_bench()
+
+    def _render_bench(self) -> None:
+        bench = (self._matchup.bench_team if self._matchup else None) or []
+        for i in range(5):
+            lab = self._bench_labels[i]
+            if i < len(bench):
+                c = bench[i]
+                tier_txt = f"[{c.tier}] " if c.tier else ""
+                pick_txt = f" 选取率:{c.pick_rate:.1f}%" if c.pick_rate is not None else ""
+                text = f"{tier_txt}{self._manager.champion_display_name(c)} 胜率:{c.win_rate:.1f}%{pick_txt}"
+                lab.setText(text)
+                lab.setStyleSheet(self._tier_style(c.tier) or "")
+            else:
+                lab.setText("-")
+                lab.setStyleSheet("")
+        self._bench_widget.setVisible(bool(bench))
 
     def _render_augments(self) -> None:
         for i in range(3):
             lab = self._aug_labels[i]
             if i < len(self._augments):
-                name, wr, tier, pick = self._augments[i]
-                # 格式：[T几] 名字 · 胜率X% · 选取率X%
+                name, wr, tier, pick, combo_txt = self._augments[i]
+                # 格式：[T几] 名字 · 胜率X% · 选取率X% + 组合提示
                 tier_txt = f"[{tier}] " if tier else ""
                 pick_txt = f" · 选取率{pick:.1f}%" if pick is not None else ""
-                lab.setText(f"{tier_txt}{name} · 胜率{wr:.1f}%{pick_txt}")
+                text = f"{tier_txt}{name} · 胜率{wr:.1f}%{pick_txt}"
+                if combo_txt:
+                    text += f" · {combo_txt}"
+                lab.setText(text)
                 style = self._tier_style(tier)          # 评级色优先
                 if style is None:
                     style = self._win_style(wr)          # 无评级用胜率黑白灰

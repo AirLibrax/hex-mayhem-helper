@@ -98,6 +98,7 @@ class MatchupView:
     """双方阵容胜率对比（悬浮窗核心数据）"""
     my_team: list[ChampionStat] = None
     their_team: list[ChampionStat] = None
+    bench_team: list[ChampionStat] = None   # ARAM 公共台（未被选择的英雄）
     patch: str = ""
 
     @property

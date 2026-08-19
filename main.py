@@ -18,7 +18,7 @@ import cv2
 from PySide6.QtCore import QObject, Qt, Signal, QTimer
 from PySide6.QtWidgets import QApplication
 
-from src.config import Config
+from src.config import Config, load_api_key_file
 from src.paths import data_dir
 from src.data.manager import DataManager
 from src.data.cache import StatsCache
@@ -43,20 +43,17 @@ class AppController(QObject):
     show_teams = Signal(bool, bool)    # (我方可见, 敌方可见) 按阶段控制
 
 
-def parse_lineup_from_champ_select(session: dict) -> tuple[list[int], list[int]]:
-    """从选人会话提取 (我方英雄ID, 敌方英雄ID)
-    我方 = 队友已选 + ARAM 公共台（bench）上可替换的英雄。"""
+def parse_lineup_from_champ_select(session: dict) -> tuple[list[int], list[int], list[int]]:
+    """从选人会话提取 (我方英雄ID, 敌方英雄ID, 公共台英雄ID)
+    我方 = 队友已选；公共台（bench）= 未被选择的英雄，单独返回供下方展示。"""
     my_ids, their_ids = [], []
     for team, target in (("myTeam", my_ids), ("theirTeam", their_ids)):
         for cell in session.get(team) or []:
             cid = cell.get("championId") or 0
             if cid > 0:
                 target.append(cid)
-    # ARAM 公共台：台上英雄任何人都可替换，纳入我方备选
-    for cid in session.get("benchChampionIds") or []:
-        if cid > 0:
-            my_ids.append(cid)
-    return my_ids, their_ids
+    bench_ids = [cid for cid in (session.get("benchChampionIds") or []) if cid > 0]
+    return my_ids, their_ids, bench_ids
 
 
 def parse_lineup_from_game(session: dict, my_puuid: str) -> tuple[list[int], list[int]]:
@@ -80,12 +77,20 @@ def parse_lineup_from_game(session: dict, my_puuid: str) -> tuple[list[int], lis
     return my_ids, their_ids
 
 
-def get_my_champion_id(session: dict, my_puuid: str) -> int:
-    """从对局会话取自己的英雄 ID"""
+def get_my_champion_id(session: dict, my_puuid: str, my_summoner_id: str = "") -> int:
+    """从对局会话取自己的英雄 ID
+
+    客户端 gameData.players 的 puuid 字段可能为空（隐私保护），
+    只返回 summonerId——用 summonerId 兜底匹配。
+    """
     players = (session.get("gameData") or {}).get("players") or []
     for p in players:
-        if p.get("puuid") == my_puuid:
+        if my_puuid and p.get("puuid") == my_puuid:
             return p.get("championId") or 0
+    if my_summoner_id:
+        for p in players:
+            if p.get("summonerId") == my_summoner_id:
+                return p.get("championId") or 0
     return 0
 
 
@@ -106,6 +111,11 @@ def main() -> int:
     log.info("HexMayhemHelper v%s 启动", VERSION)
 
     config = Config()
+    # api_key.txt 优先：用户自己申请的 Key 覆盖（含内置）
+    file_key = load_api_key_file()
+    if file_key:
+        config.set("aramgg_api_key", file_key)
+        log.info("已从 api_key.txt 加载用户 Key")
     sync_detect_cfg(config)   # 启动时同步检测屏幕配置
     cache = StatsCache()
     manager = DataManager(config, cache)
@@ -151,7 +161,7 @@ def main() -> int:
         detector: AugmentDetector | None = None
         det_applied_rev = -1
         my_puuid = None
-        state = {"sig": None, "puuid": None, "my_cid": 0}
+        state = {"sig": None, "puuid": None, "summoner_id": None, "my_cid": 0}
 
         def make_detector() -> AugmentDetector:
             return AugmentDetector(
@@ -168,15 +178,22 @@ def main() -> int:
             结果写入 game_state：符文识别时用它做"英雄适配"交叉。"""
             if phase not in (GamePhase.GAME_START.value, GamePhase.IN_PROGRESS.value):
                 return
-            if not state["puuid"]:
+            if not (state["puuid"] or state["summoner_id"]):
+                log.warning("无召唤师标识（puuid/summonerId 均空），无法识别英雄")
                 return
             try:
                 session = client.gameflow_session()
                 if not session:
+                    log.warning("无对局会话，英雄识别跳过")
                     return
-                cid = get_my_champion_id(session, state["puuid"])
+                cid = get_my_champion_id(session, state["puuid"] or "",
+                                         state["summoner_id"] or "")
                 if not cid:
+                    log.warning("对局会话中未匹配到自己（players=%d, puuid=%s, sid=%s）",
+                                len((session.get("gameData") or {}).get("players") or []),
+                                bool(state["puuid"]), state["summoner_id"])
                     return
+                log.info("识别到自己英雄 cid=%s (phase=%s)", cid, phase)
                 game_state["my_cid"] = cid
                 detail, loading = manager.ensure_champion_detail(cid)
                 if detail:
@@ -208,20 +225,23 @@ def main() -> int:
                     session = client.champ_select_session()
                     if not session:
                         return
-                    my_ids, their_ids = parse_lineup_from_champ_select(session)
+                    my_ids, their_ids, bench_ids = parse_lineup_from_champ_select(session)
                     their_ids = []   # 选人阶段不显示敌方
                 elif phase in (GamePhase.GAME_START.value, GamePhase.IN_PROGRESS.value):
                     session = client.gameflow_session()
                     if not session:
                         return
                     my_ids, their_ids = parse_lineup_from_game(session, state["puuid"] or "")
+                    bench_ids = []
                 else:
                     return
                 sig = (tuple(sorted(my_ids)), tuple(sorted(their_ids)))
                 if sig != state["sig"]:
                     state["sig"] = sig
-                    controller.matchup_ready.emit(manager.get_matchup(my_ids, their_ids))
-                    log.info("阵容已推送: 我方%d 敌方%d", len(my_ids), len(their_ids))
+                    controller.matchup_ready.emit(
+                        manager.get_matchup(my_ids, their_ids, bench_ids))
+                    log.info("阵容已推送: 我方%d 敌方%d 公共台%d",
+                             len(my_ids), len(their_ids), len(bench_ids))
             except Exception:
                 log.exception("阵容刷新异常")
 
@@ -230,7 +250,11 @@ def main() -> int:
                 controller.status_changed.emit("未连接客户端，请先启动游戏客户端")
                 if client.connect():
                     controller.status_changed.emit("已连接客户端")
-                    state["puuid"] = (client.current_summoner() or {}).get("puuid")
+                    summoner = client.current_summoner() or {}
+                    state["puuid"] = summoner.get("puuid")
+                    state["summoner_id"] = summoner.get("summonerId")
+                    log.info("已连接: puuid=%s summonerId=%s",
+                             bool(state["puuid"]), state["summoner_id"])
                 else:
                     stop_lcu.wait(3)
                     continue
@@ -272,8 +296,8 @@ def main() -> int:
                     game_state["my_cid"] = 0
                     game_state["detail"] = None
             else:
-                # 阶段未变：选人阶段每轮检查重随；检测线程检查屏幕配置热更新
-                if phase == GamePhase.CHAMP_SELECT.value:
+                # 阶段未变：选人检查重随；载入画面重试阵容（gameData 可能延迟就绪）
+                if phase in (GamePhase.CHAMP_SELECT.value, GamePhase.GAME_START.value):
                     refresh_lineup(phase)
                 if detector is not None and detect_cfg["rev"] != det_applied_rev:
                     detector.stop()
@@ -303,10 +327,11 @@ def _win_tier(wr: float) -> str:
 
 
 def _handle_augment_results(results, manager, controller, state):
-    """符文识别结果 -> 查胜率/选取率 -> UI
+    """符文识别结果 -> 查胜率/选取率/组合 -> UI
 
     数据优先级：英雄详情（识别英雄后）> 全局符文榜。
     T 级按胜率分档（T1 红 / T2 金 / T3 蓝 / T4 绿），不依赖官推 rank。
+    组合提示：识别符文命中英雄 Top5 组合时，行尾显示相关组合（其他成员+胜率）。
     """
     my_cid = state.get("my_cid") or game_state.get("my_cid") or 0
     detail = game_state.get("detail")
@@ -315,6 +340,7 @@ def _handle_augment_results(results, manager, controller, state):
         if detail:
             game_state["detail"] = detail
     hero_map = {a.augment_id: a for a in (detail.augments if detail else [])} if detail else {}
+    trios = (detail.augment_trios if detail else None) or []
 
     rows = []
     for r in results:
@@ -333,9 +359,21 @@ def _handle_augment_results(results, manager, controller, state):
                 if hero.pick_rate is not None:
                     pick = hero.pick_rate      # 英雄视角选取率优先
             tier = _win_tier(wr or 0.0)
-            rows.append((name, wr or 0.0, tier, pick))
+            # 组合提示：该符文命中的最高胜率组合（显示其他成员）
+            combo_txt = ""
+            best = None
+            for t in trios:
+                ids = t.augment_ids or []
+                if aug_id in ids and (best is None or t.win_rate > best.win_rate):
+                    best = t
+            if best:
+                others = [n for n, i in zip(best.names or [], best.augment_ids or [])
+                          if i != aug_id and n]
+                if others:
+                    combo_txt = f" 组合:{'+'.join(others)}({best.win_rate:.1f}%)"
+            rows.append((name, wr or 0.0, tier, pick, combo_txt))
         else:
-            rows.append(("识别中…", 0.0, "", None))
+            rows.append(("识别中…", 0.0, "", None, ""))
     controller.augments_ready.emit(rows)
 
 
@@ -547,8 +585,10 @@ def _open_settings(app, config, manager, controller, overlay):
                 if not session:
                     controller.status_changed.emit("无对局会话（需在选人/对局中）")
                     return
-                puuid = (client.current_summoner() or {}).get("puuid")
-                cid = get_my_champion_id(session, puuid) if puuid else 0
+                summoner = client.current_summoner() or {}
+                puuid = summoner.get("puuid")
+                sid = summoner.get("summonerId")
+                cid = get_my_champion_id(session, puuid or "", sid or "")
                 if not cid:
                     controller.status_changed.emit("未识别到英雄（不在选人/对局）")
                     return
