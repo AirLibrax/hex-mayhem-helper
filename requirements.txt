@@ -1,0 +1,16 @@
+# 运行时依赖（海克斯大乱斗助手）
+PySide6>=6.6        # 悬浮窗 UI
+requests>=2.31      # aramgg 数据 API
+psutil>=5.9         # 定位 LOL 客户端进程（lockfile 兜底）
+mss>=9.0            # 屏幕截取
+numpy>=1.26         # 图像数组
+opencv-python>=4.9  # 弹窗检测 / OCR 预处理 / 截图处理
+beautifulsoup4>=4.12 # hexdata 备用数据源（HTML 解析）
+# Windows OCR（系统自带引擎，Win10/11）
+winrt-runtime
+winrt-Windows.Foundation
+winrt-Windows.Foundation.Collections
+winrt-Windows.Globalization
+winrt-Windows.Graphics.Imaging
+winrt-Windows.Media.Ocr
+winrt-Windows.Storage.Streams
