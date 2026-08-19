@@ -49,10 +49,10 @@ QLabel { color: #e8e8ea; font-size: 13px; }
 .augRow { border: 1px solid rgba(255,255,255,0.10); border-radius: 6px; padding: 2px; }
 """
 
-# 评级颜色（仅符文/装备评级信息使用，框架保持黑灰白）
+# 评级颜色（T 级）：T1 红 / T2 金 / T3 蓝 / T4 绿 / T5 白
 TIER_COLORS = {
-    "S": "#e8b64c", "A": "#c48fff", "B": "#6cb2ff", "C": "#6fce8a", "D": "#9a9a9e",
-    "T1": "#e8b64c", "T2": "#c48fff", "T3": "#6cb2ff", "T4": "#6fce8a", "T5": "#9a9a9e",
+    "T1": "#e05a4e", "T2": "#e8b64c", "T3": "#6cb2ff", "T4": "#6fce8a", "T5": "#ffffff",
+    "S": "#e05a4e", "A": "#e8b64c", "B": "#6cb2ff", "C": "#6fce8a", "D": "#ffffff",
 }
 
 
@@ -282,15 +282,16 @@ class OverlayWindow(QWidget):
             self._build_widget.hide()
             return
         wr = build.win_rate or 0.0
-        # 装备流派 T 级（与评级色同阈值）+ 流派/胜率行上色
-        if wr >= 56:
-            tier_tag, head_style = "T1", "color: #e8b64c; font-weight: 600;"
-        elif wr >= 52:
-            tier_tag, head_style = "T2", "color: #c48fff; font-weight: 600;"
-        elif wr >= 48:
-            tier_tag, head_style = "T3", "color: #6cb2ff;"
+        # 装备流派 T 级（与符文同一套分档/颜色：≥50 T1 / ≥45 T2 / ≥40 T3 / 其余 T4）
+        if wr >= 50:
+            tier_tag = "T1"
+        elif wr >= 45:
+            tier_tag = "T2"
+        elif wr >= 40:
+            tier_tag = "T3"
         else:
-            tier_tag, head_style = "T4", "color: #e8e8ea;"
+            tier_tag = "T4"
+        head_style = f"color: {TIER_COLORS.get(tier_tag, '#e8e8ea')};"
         self._build_tags.setText(
             f"[{tier_tag}] {build.tags or '主流'} · 胜率 {wr:.1f}% · 样本 {build.games}"
         )
@@ -307,8 +308,8 @@ class OverlayWindow(QWidget):
     def clear_build(self) -> None:
         self._build_widget.hide()
 
-    def set_augments(self, rows: list[tuple[str, float, str]]) -> None:
-        """rows: [(符文名, 胜率, 档位)]，识别到弹窗时调用"""
+    def set_augments(self, rows: list[tuple]) -> None:
+        """rows: [(符文名, 胜率, T级, 选取率)]，识别到弹窗时调用"""
         self._augments = rows
         self._render_augments()
         self._aug_widget.setVisible(bool(rows))
@@ -327,31 +328,42 @@ class OverlayWindow(QWidget):
         if not self._matchup:
             for lab in self._team_labels["my"] + self._team_labels["their"]:
                 lab.setText("-")
+                lab.setStyleSheet("")
             return
         teams = {"my": self._matchup.my_team, "their": self._matchup.their_team}
         avgs = {"my": self._matchup.my_avg, "their": self._matchup.their_avg}
         for key, stats in teams.items():
             labels = self._team_labels[key]
+            header = self._team_headers[key]
+            avg = avgs[key]
+            side = "我方" if key == "my" else "敌方"
+            if stats:
+                header.setText(f"{side}队伍平均胜率：{avg:.1f}%" if avg else f"{side}队伍平均胜率：-")
+            else:
+                header.setText(f"{side}队伍平均胜率：-")
             for i in range(5):
                 if i < len(stats):
                     c = stats[i]
-                    text = f"{self._manager.champion_display_name(c)}  {c.win_rate:.1f}%"
+                    # 格式：[T几] 英雄名 胜率:X% 选取率:X%（T 级用 aramgg 分层色，统一字重）
+                    tier_txt = f"[{c.tier}] " if c.tier else ""
+                    pick_txt = f" 选取率:{c.pick_rate:.1f}%" if c.pick_rate is not None else ""
+                    text = f"{tier_txt}{self._manager.champion_display_name(c)} 胜率:{c.win_rate:.1f}%{pick_txt}"
                     labels[i].setText(text)
-                    labels[i].setStyleSheet(self._win_style(c.win_rate))
+                    style = self._tier_style(c.tier)
+                    labels[i].setStyleSheet(style or "")
                 else:
                     labels[i].setText("-")
                     labels[i].setStyleSheet("")
-            avg = avgs[key]
-            labels[0].setText(labels[0].text() + f"   [均 {avg:.1f}%]")
 
     def _render_augments(self) -> None:
         for i in range(3):
             lab = self._aug_labels[i]
             if i < len(self._augments):
-                name, wr, tier = self._augments[i]
-                # 格式：[T几] 名字 胜率
+                name, wr, tier, pick = self._augments[i]
+                # 格式：[T几] 名字 · 胜率X% · 选取率X%
                 tier_txt = f"[{tier}] " if tier else ""
-                lab.setText(f"{tier_txt}{name}  {wr:.1f}%")
+                pick_txt = f" · 选取率{pick:.1f}%" if pick is not None else ""
+                lab.setText(f"{tier_txt}{name} · 胜率{wr:.1f}%{pick_txt}")
                 style = self._tier_style(tier)          # 评级色优先
                 if style is None:
                     style = self._win_style(wr)          # 无评级用胜率黑白灰

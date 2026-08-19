@@ -11,7 +11,8 @@ class ChampionStat:
     name_zh: str = ""
     name_en: str = ""
     win_rate: float = 0.0       # 0~100
-    tier: str = ""              # S+ ~ D 或中文档位
+    tier: str = ""              # T1~T5（aramgg 胜率分层）
+    pick_rate: Optional[float] = None   # 选取率（%）
     sample: Optional[int] = None
     patch: str = ""
 
@@ -23,6 +24,7 @@ class AugmentStat:
     name_en: str = ""
     win_rate: float = 0.0
     tier: str = ""
+    pick_rate: Optional[float] = None   # 选取率（%）
     sample: Optional[int] = None
     patch: str = ""
     icon_url: str = ""         # 符文图标 CDN 地址（模板匹配用）

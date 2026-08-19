@@ -35,6 +35,7 @@ EXPECTED_CARDS = 3             # 三张符文卡片
 MIN_EDGE_RUN = 70              # 边框竖线最长连续边缘段阈值（px）
 CLUSTER_GAP = 25               # 相近边缘簇合并间距（px）
 BORDER_MAX_W = 60              # 单条边框线合并后最大宽度（px）
+DARK_MEDIAN_MAX = 55           # 弹窗暗化判定：全帧亮度中位数上限（弹窗遮罩使画面变暗）
 
 
 class ScreenCapturer:
@@ -159,6 +160,16 @@ class AugmentDetector:
         # 取最靠近屏幕中央的三张
         candidates = sorted(candidates, key=lambda c: c[2])[:EXPECTED_CARDS]
         candidates = sorted(candidates, key=lambda c: c[0])
+        # 一致性校验（防误检）：真弹窗三卡等宽、间距均匀；
+        # 商店/桌面/选人界面的矩形框宽度与间距参差不齐。
+        widths = [b - a for a, b, _ in candidates]
+        w_max, w_min = max(widths), min(widths)
+        if w_max <= 0 or (w_max - w_min) > 0.25 * w_max:
+            return None
+        gaps = [candidates[i + 1][0] - candidates[i][1] for i in range(len(candidates) - 1)]
+        g_max, g_min = max(gaps), min(gaps)
+        if g_max <= 0 or (g_max - g_min) > 0.5 * g_max:
+            return None
         return [center[:, a:b] for a, b, _ in candidates]
 
     # ---------- （模板匹配已移除，识别走 OCR） ----------
@@ -197,9 +208,8 @@ class AugmentDetector:
         while not self._stop.is_set():
             try:
                 results, _ = self.analyze_screens()
-                err_count = 0
                 if results:
-                    sig = tuple(sorted(r.get("augment_id") for r in results))
+                    sig = tuple(sorted((r.get("augment_id") or "") for r in results))
                     # 弹窗新出现，或内容变化（重 roll）才推送
                     if not prev_visible or sig != prev_sig:
                         prev_visible = True
@@ -210,6 +220,7 @@ class AugmentDetector:
                     # 弹窗消失：重置状态，下次出现立即识别
                     prev_visible = False
                     prev_sig = None
+                err_count = 0
             except Exception:
                 err_count += 1
                 log.exception("符文检测异常（连续 %d 次）", err_count)

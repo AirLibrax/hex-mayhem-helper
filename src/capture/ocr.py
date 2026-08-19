@@ -56,7 +56,7 @@ async def _ocr_async(img_bgr) -> str:
         return ""
     result = await engine.recognize_async(sbmp)
     text = "".join(line.text for line in result.lines)
-    log.info("OCR 识别结果: %r", text[:40])
+    log.debug("OCR 识别结果: %r", text[:40])
     return text
 
 

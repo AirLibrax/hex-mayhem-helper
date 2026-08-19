@@ -20,6 +20,14 @@ src/secrets.py
 # ---------- 用户数据（配置/缓存/日志，在用户目录） ----------
 .hex-mayhem-helper/
 
+# ---------- 本地数据（源码模式下生成在项目根，勿提交） ----------
+settings.json
+stats_cache.db
+app.log
+debug_capture.png
+.hmh_write_test
+COMMIT.txt
+
 # ---------- 编辑器 / 系统 ----------
 .idea/
 .vscode/

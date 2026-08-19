@@ -5,7 +5,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-APP_DIR = Path.home() / ".hex-mayhem-helper"
+from .paths import data_dir
+
+APP_DIR = data_dir()
 CONFIG_PATH = APP_DIR / "settings.json"
 DB_PATH = APP_DIR / "stats_cache.db"
 
@@ -18,7 +20,7 @@ DEFAULT_SETTINGS = {
     "overlay_y": 100,
     "overlay_width": 360,
     "overlay_height": 300,
-    "poll_interval": 2.0,          # LCU 轮询秒
+    "poll_interval": 1.0,          # LCU 轮询秒（载入画面窗口短，需快速捕获）
     "auto_refresh_hours": 24,      # 数据自动刷新间隔
 }
 

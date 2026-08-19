@@ -74,6 +74,7 @@ class AramggProvider(StatsProvider):
                 name_en=c.get("alias") or "",
                 win_rate=round(stats["winRate"] * 100, 2) if stats and stats.get("winRate") is not None else 0.0,
                 tier=_tier_label(stats.get("tier")) if stats else "",
+                pick_rate=round((stats.get("pickRate") or 0.0) * 100, 2) if stats and stats.get("pickRate") is not None else None,
                 sample=stats.get("games") if stats else None,
                 patch=stats.get("gamePatch") or "" if stats else "",
             ))
@@ -90,12 +91,14 @@ class AramggProvider(StatsProvider):
             if not stats or not stats.get("statsAvailable", True):
                 continue
             win_rate = round((stats.get("winRate") or 0.0) * 100, 2)
+            pick_rate = round((stats.get("pickRate") or 0.0) * 100, 2) if stats.get("pickRate") is not None else None
             items.append(AugmentStat(
                 augment_id=str(a["id"]),
                 name_zh=a.get("name") or "",
                 name_en="",
                 win_rate=win_rate,
                 tier=_tier_label(stats.get("tier")),
+                pick_rate=pick_rate,
                 sample=stats.get("games"),
                 patch=stats.get("gamePatch") or "",
                 icon_url=a.get("iconUrl") or "",
@@ -124,7 +127,7 @@ class AramggProvider(StatsProvider):
                 rarity_name=a.get("rarityName") or "",
                 rank=int(rank),
                 win_rate=round(wr * 100, 2) if wr is not None else None,
-                pick_rate=stats.get("pickRate"),
+                pick_rate=round((stats.get("pickRate") or 0.0) * 100, 2) if stats.get("pickRate") is not None else None,
                 icon_url=a.get("iconUrl") or "",
             ))
         augments.sort(key=lambda x: x.rank)

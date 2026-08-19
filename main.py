@@ -19,6 +19,7 @@ from PySide6.QtCore import QObject, Qt, Signal, QTimer
 from PySide6.QtWidgets import QApplication
 
 from src.config import Config
+from src.paths import data_dir
 from src.data.manager import DataManager
 from src.data.cache import StatsCache
 from src.data.models import MatchupView
@@ -89,7 +90,7 @@ def get_my_champion_id(session: dict, my_puuid: str) -> int:
 
 
 def main() -> int:
-    log_dir = Path.home() / ".hex-mayhem-helper"
+    log_dir = data_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
@@ -177,11 +178,26 @@ def main() -> int:
                 if not cid:
                     return
                 game_state["my_cid"] = cid
-                detail, _ = manager.ensure_champion_detail(cid)
+                detail, loading = manager.ensure_champion_detail(cid)
                 if detail:
                     game_state["detail"] = detail
-                if detail and detail.builds:
-                    controller.build_ready.emit(detail.builds[0])
+                    if detail.builds:
+                        controller.build_ready.emit(detail.builds[0])
+                elif loading:
+                    # 后台拉取中：异步等待就绪后更新 game_state（不阻塞 LCU 轮询线程）。
+                    # 否则第一局的第一个弹窗会因详情未就绪而显示全局数据。
+                    def waiter(cid=cid):
+                        for _ in range(30):   # 最多 15 秒
+                            time.sleep(0.5)
+                            d = manager.get_champion_detail(cid)
+                            if d:
+                                game_state["detail"] = d
+                                if d.builds:
+                                    controller.build_ready.emit(d.builds[0])
+                                log.info("英雄详情就绪: id=%d 符文%d 出装%d",
+                                         cid, len(d.augments), len(d.builds))
+                                break
+                    threading.Thread(target=waiter, daemon=True, name="detail-wait").start()
             except Exception:
                 log.exception("装备推荐加载异常")
 
@@ -211,7 +227,7 @@ def main() -> int:
 
         while not stop_lcu.is_set():
             if not client.connected:
-                controller.status_changed.emit("未连接客户端")
+                controller.status_changed.emit("未连接客户端，请先启动游戏客户端")
                 if client.connect():
                     controller.status_changed.emit("已连接客户端")
                     state["puuid"] = (client.current_summoner() or {}).get("puuid")
@@ -225,6 +241,9 @@ def main() -> int:
                 controller.status_changed.emit(phase)
                 if phase == GamePhase.CHAMP_SELECT.value:
                     state["sig"] = None          # 进入选人，强制刷新
+                    # 清上一局残留的英雄上下文（防异常跳阶段）
+                    game_state["my_cid"] = 0
+                    game_state["detail"] = None
                     controller.show_teams.emit(True, False)   # 只显示我方(含公共台)
                     controller.build_ready.emit(None)
                     controller.augments_ready.emit([])
@@ -272,13 +291,22 @@ def main() -> int:
         stop_lcu.set()
 
 
-def _handle_augment_results(results, manager, controller, state):
-    """符文识别结果 -> 查胜率/官方推荐 -> UI
+def _win_tier(wr: float) -> str:
+    """按胜率分 T 级（胜率网站层级）：≥50 T1 / ≥45 T2 / ≥40 T3 / <40 T4"""
+    if wr >= 50:
+        return "T1"
+    if wr >= 45:
+        return "T2"
+    if wr >= 40:
+        return "T3"
+    return "T4"
 
-    交叉逻辑（英雄适配）：识别出的三个符文，逐个查当前英雄详情里的
-    官方推荐 rank（rank 越小越优先）与"该英雄使用该符文"的胜率，
-    替代全局胜率。detail 优先取 game_state（手动截图/自动检测共享），
-    无则回退读缓存。
+
+def _handle_augment_results(results, manager, controller, state):
+    """符文识别结果 -> 查胜率/选取率 -> UI
+
+    数据优先级：英雄详情（识别英雄后）> 全局符文榜。
+    T 级按胜率分档（T1 红 / T2 金 / T3 蓝 / T4 绿），不依赖官推 rank。
     """
     my_cid = state.get("my_cid") or game_state.get("my_cid") or 0
     detail = game_state.get("detail")
@@ -286,30 +314,28 @@ def _handle_augment_results(results, manager, controller, state):
         detail = manager.get_champion_detail(my_cid)
         if detail:
             game_state["detail"] = detail
-    rank_map = {a.augment_id: a for a in (detail.augments if detail else [])} if detail else {}
+    hero_map = {a.augment_id: a for a in (detail.augments if detail else [])} if detail else {}
 
     rows = []
     for r in results:
         aug_id = r.get("augment_id")
         if aug_id:
-            # 全局胜率
             aug = manager.get_augment_by_id(aug_id)
             name = aug.name_zh if aug else ""
-            wr = aug.win_rate if aug else None
-            tier = aug.tier if aug else ""
-            # 英雄适配：官方推荐 rank + 该英雄胜率覆盖全局
-            rec = rank_map.get(aug_id)
-            if rec and not name:
-                name = rec.name_zh
-            if rec:
-                # tier 传 T 级（T1-T3）供悬浮窗评级上色（T1金 T2紫 T3蓝）
-                tier = f"T{rec.rank}"
-                if rec.win_rate is not None:
-                    wr = rec.win_rate   # 英雄适配胜率优先（该英雄用此符文的胜率）
-            # name 不含 tier：T 级由悬浮窗统一以 [T几] 前缀显示，避免重复
-            rows.append((name, wr or 0.0, tier))
+            wr = aug.win_rate if aug else 0.0
+            pick = aug.pick_rate if aug else None
+            hero = hero_map.get(aug_id)
+            if hero:
+                if hero.name_zh and not name:
+                    name = hero.name_zh
+                if hero.win_rate is not None:
+                    wr = hero.win_rate        # 英雄视角胜率优先
+                if hero.pick_rate is not None:
+                    pick = hero.pick_rate      # 英雄视角选取率优先
+            tier = _win_tier(wr or 0.0)
+            rows.append((name, wr or 0.0, tier, pick))
         else:
-            rows.append(("识别中…", 0.0, ""))
+            rows.append(("识别中…", 0.0, "", None))
     controller.augments_ready.emit(rows)
 
 
@@ -353,21 +379,28 @@ def _show_debug_result(results, shot_path, manager, parent, monitor_idx=None):
         detail = game_state.get("detail")
         hero_line = ""
         if detail:
-            hero_line = f"（当前英雄 {detail.champion_id} 适配交叉）"
+            hero_line = f"（英雄视角数据）"
         lines = [f"检测到 {len(results)} 张符文卡{hero_line}："]
-        rank_map = {a.augment_id: a for a in (detail.augments if detail else [])} if detail else {}
+        hero_map = {a.augment_id: a for a in (detail.augments if detail else [])} if detail else {}
         all_unmatched = True
         for r in results:
             aug_id = r.get("augment_id")
             if aug_id:
                 aug = manager.get_augment_by_id(aug_id)
                 name = aug.name_zh if aug else ""
-                wr = f"{aug.win_rate:.1f}%" if aug else ""
-                rec = rank_map.get(aug_id)
-                line = f"  · {name or aug_id}（ID {aug_id}）{wr}"
-                if rec:
-                    hero_wr = f"{rec.win_rate:.1f}%" if rec.win_rate is not None else "-"
-                    line += f" | 适配: 官推#{rec.rank} · 英雄胜率{hero_wr}"
+                wr = aug.win_rate or 0.0
+                pick = aug.pick_rate
+                hero = hero_map.get(aug_id)
+                if hero:
+                    if hero.name_zh and not name:
+                        name = hero.name_zh
+                    if hero.win_rate is not None:
+                        wr = hero.win_rate
+                    if hero.pick_rate is not None:
+                        pick = hero.pick_rate
+                line = f"  · {name or aug_id} · 胜率{wr:.1f}%"
+                if pick is not None:
+                    line += f" · 选取率{pick:.1f}%"
                 lines.append(line)
                 all_unmatched = False
             else:
@@ -470,7 +503,7 @@ def _open_settings(app, config, manager, controller, overlay):
                 if hit_frame is None and screen_frames:
                     hit_frame = screen_frames[0][1]
                     hit_idx = screen_frames[0][0]
-                debug_dir = Path.home() / ".hex-mayhem-helper"
+                debug_dir = data_dir()
                 debug_dir.mkdir(parents=True, exist_ok=True)
                 shot_path = debug_dir / "debug_capture.png"
                 cv2.imwrite(str(shot_path), hit_frame)

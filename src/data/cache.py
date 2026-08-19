@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS augments (
     name_en TEXT DEFAULT '',
     win_rate REAL DEFAULT 0,
     tier TEXT DEFAULT '',
+    pick_rate REAL,
     sample INTEGER,
     patch TEXT DEFAULT '',
     provider TEXT DEFAULT '',
@@ -77,6 +78,11 @@ class StatsCache:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(augments)")}
         if "icon_url" not in cols:
             self._conn.execute("ALTER TABLE augments ADD COLUMN icon_url TEXT DEFAULT ''")
+        if "pick_rate" not in cols:
+            self._conn.execute("ALTER TABLE augments ADD COLUMN pick_rate REAL")
+        cols_c = {r[1] for r in self._conn.execute("PRAGMA table_info(champions)")}
+        if "pick_rate" not in cols_c:
+            self._conn.execute("ALTER TABLE champions ADD COLUMN pick_rate REAL")
         tables = {r[0] for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "champion_details" not in tables:
             self._conn.executescript(
@@ -95,10 +101,10 @@ class StatsCache:
             self._conn.execute("DELETE FROM champions")
             self._conn.executemany(
                 """INSERT INTO champions
-                   (champion_id, name_zh, name_en, win_rate, tier, sample, patch, provider, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                   (champion_id, name_zh, name_en, win_rate, tier, pick_rate, sample, patch, provider, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?) """,
                 [(i.champion_id, i.name_zh, i.name_en, i.win_rate, i.tier,
-                  i.sample, i.patch, provider, now) for i in items],
+                  i.pick_rate, i.sample, i.patch, provider, now) for i in items],
             )
         self._set_meta("champions_updated_at", str(now))
         self._set_meta("champions_provider", provider)
@@ -111,10 +117,10 @@ class StatsCache:
             self._conn.execute("DELETE FROM augments")
             self._conn.executemany(
                 """INSERT INTO augments
-                   (augment_id, name_zh, name_en, win_rate, tier, sample, patch, provider, icon_url, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?) """,
+                   (augment_id, name_zh, name_en, win_rate, tier, pick_rate, sample, patch, provider, icon_url, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?) """,
                 [(i.augment_id, i.name_zh, i.name_en, i.win_rate, i.tier,
-                  i.sample, i.patch, provider, i.icon_url, now) for i in items],
+                  i.pick_rate, i.sample, i.patch, provider, i.icon_url, now) for i in items],
             )
         self._set_meta("augments_updated_at", str(now))
         self._set_meta("augments_provider", provider)
@@ -261,6 +267,7 @@ def _row_to_champion(row: sqlite3.Row) -> ChampionStat:
         champion_id=row["champion_id"],
         name_zh=row["name_zh"] or "",
         name_en=row["name_en"] or "",
+        pick_rate=row["pick_rate"] if "pick_rate" in row.keys() else None,
         win_rate=row["win_rate"] or 0.0,
         tier=row["tier"] or "",
         sample=row["sample"],
@@ -275,6 +282,7 @@ def _row_to_augment(row: sqlite3.Row) -> AugmentStat:
         name_en=row["name_en"] or "",
         win_rate=row["win_rate"] or 0.0,
         tier=row["tier"] or "",
+        pick_rate=row["pick_rate"] if "pick_rate" in row.keys() else None,
         sample=row["sample"],
         patch=row["patch"] or "",
         icon_url=row["icon_url"] or "",
