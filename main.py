@@ -52,7 +52,10 @@ def parse_lineup_from_champ_select(session: dict) -> tuple[list[int], list[int],
             cid = cell.get("championId") or 0
             if cid > 0:
                 target.append(cid)
-    bench_ids = [cid for cid in (session.get("benchChampionIds") or []) if cid > 0]
+    bench_ids = [cid for cid in (session.get("benchChampionIds") or session.get("otherChampionIds") or []) if cid > 0]
+    if not bench_ids:
+        # 兜底：myTeam 里 championId 为 0 的格子可能是可选位
+        pass
     return my_ids, their_ids, bench_ids
 
 
@@ -91,6 +94,19 @@ def get_my_champion_id(session: dict, my_puuid: str, my_summoner_id: str = "") -
         for p in players:
             if p.get("summonerId") == my_summoner_id:
                 return p.get("championId") or 0
+    return 0
+
+
+def get_my_champion_from_champ_select(session: dict, summoner_id: str, puuid: str) -> int:
+    """从选人会话识别自己英雄（myTeam 按 summonerId/puuid 匹配）
+
+    关键：进入对局后 gameData.players 会清空，英雄只能在选人/载入阶段识别。
+    """
+    for cell in session.get("myTeam") or []:
+        if summoner_id and cell.get("summonerId") == summoner_id:
+            return cell.get("championId") or 0
+        if puuid and cell.get("puuid") == puuid:
+            return cell.get("championId") or 0
     return 0
 
 
@@ -179,6 +195,14 @@ def main() -> int:
             if phase not in (GamePhase.GAME_START.value, GamePhase.IN_PROGRESS.value):
                 return
             if not (state["puuid"] or state["summoner_id"]):
+                # 启动时可能取不到召唤师信息（如已在游戏中），这里重试一次
+                try:
+                    summoner = client.current_summoner() or {}
+                    state["puuid"] = state["puuid"] or summoner.get("puuid")
+                    state["summoner_id"] = state["summoner_id"] or summoner.get("summonerId")
+                except Exception:
+                    pass
+            if not (state["puuid"] or state["summoner_id"]):
                 log.warning("无召唤师标识（puuid/summonerId 均空），无法识别英雄")
                 return
             try:
@@ -217,6 +241,46 @@ def main() -> int:
                     threading.Thread(target=waiter, daemon=True, name="detail-wait").start()
             except Exception:
                 log.exception("装备推荐加载异常")
+
+        def load_build_from_champ_select(phase: str) -> None:
+            """选人阶段识别自己英雄 + 预拉详情（关键：进游戏后 players 清空，
+            英雄只能在选人/载入阶段识别；这里提前锁定，对局直接走缓存）。"""
+            if phase != GamePhase.CHAMP_SELECT.value:
+                return
+            if not (state["puuid"] or state["summoner_id"]):
+                return
+            try:
+                session = client.champ_select_session()
+                if not session:
+                    return
+                cid = get_my_champion_from_champ_select(
+                    session, state["summoner_id"] or "", state["puuid"] or "")
+                if not cid:
+                    return   # 尚未锁定英雄，下轮重试
+                if game_state.get("my_cid") == cid and game_state.get("detail"):
+                    return   # 已识别且详情就绪，跳过
+                log.info("选人阶段识别到自己英雄 cid=%s", cid)
+                game_state["my_cid"] = cid
+                detail, loading = manager.ensure_champion_detail(cid)
+                if detail:
+                    game_state["detail"] = detail
+                    if detail.builds:
+                        controller.build_ready.emit(detail.builds[0])
+                elif loading:
+                    def waiter(cid=cid):
+                        for _ in range(30):
+                            time.sleep(0.5)
+                            d = manager.get_champion_detail(cid)
+                            if d:
+                                game_state["detail"] = d
+                                if d.builds:
+                                    controller.build_ready.emit(d.builds[0])
+                                log.info("选人阶段详情就绪: id=%d 符文%d 出装%d",
+                                         cid, len(d.augments), len(d.builds))
+                                break
+                    threading.Thread(target=waiter, daemon=True, name="cs-detail-wait").start()
+            except Exception:
+                log.exception("选人阶段英雄识别异常")
 
         def refresh_lineup(phase: str) -> None:
             """按阶段拉阵容：选人=我方(含公共台)；载入=双方；对局=不再推送（阵容区隐藏）"""
@@ -272,6 +336,7 @@ def main() -> int:
                     controller.build_ready.emit(None)
                     controller.augments_ready.emit([])
                     refresh_lineup(phase)
+                    load_build_from_champ_select(phase)   # 选人阶段识别自己英雄+预拉详情
                 elif phase == GamePhase.GAME_START.value:
                     state["sig"] = None          # 载入画面：显示双方
                     controller.show_teams.emit(True, True)
@@ -296,9 +361,11 @@ def main() -> int:
                     game_state["my_cid"] = 0
                     game_state["detail"] = None
             else:
-                # 阶段未变：选人检查重随；载入画面重试阵容（gameData 可能延迟就绪）
+                # 阶段未变：选人检查重随/锁定英雄；载入画面重试阵容（gameData 可能延迟就绪）
                 if phase in (GamePhase.CHAMP_SELECT.value, GamePhase.GAME_START.value):
                     refresh_lineup(phase)
+                if phase == GamePhase.CHAMP_SELECT.value:
+                    load_build_from_champ_select(phase)   # 等玩家锁定后识别
                 if detector is not None and detect_cfg["rev"] != det_applied_rev:
                     detector.stop()
                     detector = make_detector()
@@ -341,6 +408,12 @@ def _handle_augment_results(results, manager, controller, state):
             game_state["detail"] = detail
     hero_map = {a.augment_id: a for a in (detail.augments if detail else [])} if detail else {}
     trios = (detail.augment_trios if detail else None) or []
+    # 数据来源标注：英雄视角 or 全局
+    src_name = "全局"
+    if my_cid:
+        ch = manager.get_champion(my_cid)
+        if ch:
+            src_name = ch.name_zh or f"#{my_cid}"
 
     rows = []
     for r in results:
@@ -358,7 +431,7 @@ def _handle_augment_results(results, manager, controller, state):
                     wr = hero.win_rate        # 英雄视角胜率优先
                 if hero.pick_rate is not None:
                     pick = hero.pick_rate      # 英雄视角选取率优先
-            tier = _win_tier(wr or 0.0)
+            tier = aug.tier if aug and aug.tier else _win_tier(wr or 0.0)  # 官方 tier 优先
             # 组合提示：该符文命中的最高胜率组合（显示其他成员）
             combo_txt = ""
             best = None
@@ -371,9 +444,9 @@ def _handle_augment_results(results, manager, controller, state):
                           if i != aug_id and n]
                 if others:
                     combo_txt = f" 组合:{'+'.join(others)}({best.win_rate:.1f}%)"
-            rows.append((name, wr or 0.0, tier, pick, combo_txt))
+            rows.append((name, wr or 0.0, tier, pick, combo_txt, src_name))
         else:
-            rows.append(("识别中…", 0.0, "", None, ""))
+            rows.append(("识别中…", 0.0, "", None, "", src_name))
     controller.augments_ready.emit(rows)
 
 

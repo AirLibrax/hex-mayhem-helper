@@ -19,27 +19,49 @@ ZIP = DIST / f"HexMayhemHelper_v{VERSION}.zip"
 
 
 def main() -> int:
+    release = "--release" in sys.argv or os.environ.get("HMH_RELEASE") == "1"
+    # 命名惯例：公开版带平台后缀（仅支持 Windows x64）
+    if release:
+        zip_name = f"HexMayhemHelper_v{VERSION}-windows-x64.zip"
+    else:
+        zip_name = f"HexMayhemHelper_v{VERSION}.zip"
+    ZIP = DIST / zip_name
+
     # 1) 清理
     subprocess.run(["taskkill", "/f", "/im", "HexMayhemHelper.exe"],
                    capture_output=True)
     shutil.rmtree(APP_DIR, ignore_errors=True)
-    for old in DIST.glob("HexMayhemHelper_v*.zip"):
+    for old in DIST.glob(f"HexMayhemHelper_v{VERSION}*.zip"):
         old.unlink()
-    print(f"[1/4] version v{VERSION}")
+    suffix = " (public, 无内置Key)" if release else ""
+    print(f"[1/4] version v{VERSION}{suffix}")
 
     # 2) PyInstaller（onedir）
-    cmd = [
-        str(PYI), "--noconfirm", "--windowed", "--name", "HexMayhemHelper",
-        "--collect-all", "winrt",
-        "--exclude-module", "tkinter", "--exclude-module", "unittest",
-        "--exclude-module", "pydoc",
-        "main.py",
-    ]
-    print("[2/4] PyInstaller...")
-    r = subprocess.run(cmd)
-    if r.returncode != 0:
-        print("BUILD_FAILED")
-        return 1
+    # release 模式：临时用无 Key 的 secrets.example.py 覆盖 secrets.py，打包后恢复
+    bak = None
+    if release:
+        src_secrets = ROOT / "src" / "secrets.py"
+        bak = src_secrets.with_suffix(".py.bak")
+        shutil.copy(src_secrets, bak)
+        shutil.copy(ROOT / "src" / "secrets.example.py", src_secrets)
+        print("[2/4] release 模式: 已切换无内置 Key 的 secrets")
+    try:
+        cmd = [
+            str(PYI), "--noconfirm", "--windowed", "--name", "HexMayhemHelper",
+            "--collect-all", "winrt",
+            "--exclude-module", "tkinter", "--exclude-module", "unittest",
+            "--exclude-module", "pydoc",
+            "main.py",
+        ]
+        print("[2/4] PyInstaller...")
+        r = subprocess.run(cmd)
+        if r.returncode != 0:
+            print("BUILD_FAILED")
+            return 1
+    finally:
+        if bak is not None and bak.exists():
+            shutil.move(str(bak), str(ROOT / "src" / "secrets.py"))
+            print("[2/4] 已恢复本地 secrets.py")
 
     # 3) 生成 api_key.txt 模板（用户可填自己的 Key）
     print("[3/4] api_key.txt...")

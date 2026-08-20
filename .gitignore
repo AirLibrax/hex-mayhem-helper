@@ -27,6 +27,7 @@ app.log
 debug_capture.png
 .hmh_write_test
 COMMIT.txt
+api.txt
 
 # ---------- 编辑器 / 系统 ----------
 .idea/

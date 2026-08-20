@@ -325,7 +325,7 @@ class OverlayWindow(QWidget):
         self._build_widget.hide()
 
     def set_augments(self, rows: list[tuple]) -> None:
-        """rows: [(符文名, 胜率, T级, 选取率, 组合提示)]，识别到弹窗时调用"""
+        """rows: [(符文名, 胜率, T级, 选取率, 组合提示, 数据来源)]"""
         self._augments = rows
         self._render_augments()
         self._aug_widget.setVisible(bool(rows))
@@ -395,13 +395,15 @@ class OverlayWindow(QWidget):
         for i in range(3):
             lab = self._aug_labels[i]
             if i < len(self._augments):
-                name, wr, tier, pick, combo_txt = self._augments[i]
-                # 格式：[T几] 名字 · 胜率X% · 选取率X% + 组合提示
+                name, wr, tier, pick, combo_txt, src = self._augments[i]
+                # 格式：[T几] 名字 · 胜率X% · 选取率X% · 组合提示 · [数据来源]
                 tier_txt = f"[{tier}] " if tier else ""
                 pick_txt = f" · 选取率{pick:.1f}%" if pick is not None else ""
                 text = f"{tier_txt}{name} · 胜率{wr:.1f}%{pick_txt}"
                 if combo_txt:
                     text += f" · {combo_txt}"
+                if src:
+                    text += f" · [{src}]"
                 lab.setText(text)
                 style = self._tier_style(tier)          # 评级色优先
                 if style is None:
